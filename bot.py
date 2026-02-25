@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from yuki import YUKI_SYSTEM_PROMPT
 from calendar_client import CalendarClient
 from memory_manager import load_memory, update_memory
+from obsidian_client import get_full_context
 
 load_dotenv()
 
@@ -56,12 +57,15 @@ async def get_yuki_response(user_id: int, user_message: str, include_calendar: b
         conversations[user_id] = []
 
     cal_context = calendar.get_context_for_yuki() if include_calendar else ""
+    obsidian_context = get_full_context()
     memory = load_memory()
     system = YUKI_SYSTEM_PROMPT
     if memory:
         system += f"\n\n━━━ YUKI'S MEMORY ━━━\n{memory}"
     if cal_context:
         system += f"\n\n━━━ LIVE CALENDAR CONTEXT ━━━\n{cal_context}"
+    if obsidian_context:
+        system += f"\n\n━━━ KAZ'S OBSIDIAN NOTES ━━━\n{obsidian_context}"
 
     conversations[user_id].append({"role": "user", "content": user_message})
 
@@ -213,6 +217,49 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_yuki_reply(update, reply, user_id)
 
 
+async def send_proactive(context: ContextTypes.DEFAULT_TYPE, prompt: str):
+    """Send a scheduled message to Kaz."""
+    user_id = int(os.getenv('ALLOWED_USER_IDS', '0').split(',')[0].strip())
+    if not user_id:
+        return
+    try:
+        reply = await get_yuki_response(user_id, prompt)
+        # Proactive messages don't come from an Update, so send directly
+        limit = 4096
+        for i in range(0, len(reply), limit):
+            await context.bot.send_message(chat_id=user_id, text=reply[i:i + limit])
+    except Exception as e:
+        logger.error(f"Proactive message error: {e}")
+
+
+async def morning_briefing(context: ContextTypes.DEFAULT_TYPE):
+    await send_proactive(context,
+        "Good morning Kaz-kun! Give him his morning briefing: "
+        "what's on his calendar today, anything notable from his Obsidian notes, "
+        "and one content idea based on what he's been writing about lately. "
+        "Keep it warm and energizing — set the tone for a good day."
+    )
+
+
+async def midday_checkin(context: ContextTypes.DEFAULT_TYPE):
+    await send_proactive(context,
+        "It's midday — check in on Kaz-kun. "
+        "Ask how the morning went, remind him of any afternoon calendar events, "
+        "and if something in his notes today looks postable, mention it naturally. "
+        "Keep it short and light."
+    )
+
+
+async def evening_wrapup(context: ContextTypes.DEFAULT_TYPE):
+    await send_proactive(context,
+        "Good evening! Do Kaz-kun's evening wrap-up: "
+        "acknowledge what he's accomplished today based on his notes and calendar, "
+        "mention anything to prep for tomorrow, "
+        "and pitch one content idea inspired by something he lived or wrote today. "
+        "Warm and grounding — help him close the day well."
+    )
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -246,6 +293,14 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Scheduled proactive messages (Pacific Time)
+    import pytz
+    pt = pytz.timezone('America/Los_Angeles')
+    jq = app.job_queue
+    jq.run_daily(morning_briefing, time=datetime.strptime("09:00", "%H:%M").replace(tzinfo=pt).timetz())
+    jq.run_daily(midday_checkin,   time=datetime.strptime("13:00", "%H:%M").replace(tzinfo=pt).timetz())
+    jq.run_daily(evening_wrapup,   time=datetime.strptime("19:00", "%H:%M").replace(tzinfo=pt).timetz())
 
     print("✨ Yuki is awake and ready for Kaz-kun! ✨")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
