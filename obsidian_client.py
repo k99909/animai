@@ -60,6 +60,39 @@ def get_mom_context() -> str:
     return _read(VAULT_PATH / 'Projects' / "Mom's Social Media" / 'Context.md')
 
 
+def has_written_today() -> bool:
+    """Returns True if today's daily note has meaningful content."""
+    content = get_daily_note()
+    # Ignore empty files or bare templates (less than 100 chars of real content)
+    stripped = '\n'.join(
+        line for line in content.splitlines()
+        if line.strip() and not line.strip().startswith('#')
+    )
+    return len(stripped) > 100
+
+
+def append_to_daily_note(text: str) -> str:
+    """Append text to today's daily note, creating it if needed. Returns the file path."""
+    today = datetime.now()
+    filename = today.strftime('%Y-%m-%d') + '.md'
+    note_path = VAULT_PATH / 'Daily Notes' / filename
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+
+    timestamp = today.strftime('%-I:%M %p')
+    entry = f"\n\n---\n*Added via Yuki at {timestamp}*\n{text.strip()}"
+
+    if note_path.exists():
+        with open(note_path, 'a', encoding='utf-8') as f:
+            f.write(entry)
+    else:
+        # Create a minimal daily note with the entry
+        header = f"# {today.strftime('%A, %B %d, %Y')}\n"
+        with open(note_path, 'w', encoding='utf-8') as f:
+            f.write(header + entry)
+
+    return str(note_path)
+
+
 def get_full_context() -> str:
     parts = []
 

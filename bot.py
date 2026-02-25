@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from yuki import YUKI_SYSTEM_PROMPT
 from calendar_client import CalendarClient
 from memory_manager import load_memory, update_memory
-from obsidian_client import get_full_context
+from obsidian_client import get_full_context, has_written_today, append_to_daily_note
 
 load_dotenv()
 
@@ -39,6 +39,8 @@ conversations = {}
 pending_actions = {}
 # Message counter for memory updates
 message_count = {}
+# Users currently in note-writing mode (next message gets saved to Obsidian)
+note_mode = {}
 
 
 def is_allowed(user_id: int) -> bool:
@@ -169,11 +171,42 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_yuki_reply(update, reply, user_id)
 
 
+async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
+    text = ' '.join(context.args) if context.args else ''
+    if text:
+        append_to_daily_note(text)
+        reply = await get_yuki_response(
+            user_id,
+            f"Kaz just added this to his Obsidian daily note: \"{text}\". Acknowledge briefly and warmly.",
+            include_calendar=False
+        )
+        await send_yuki_reply(update, reply, user_id)
+    else:
+        # No text provided — enter note mode for next message
+        note_mode[user_id] = True
+        await update.message.reply_text("Ready! Send me what you want to add and Yuki will save it to your notes ✨")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_allowed(user_id):
         return
     text = update.message.text
+
+    # If user is in note mode, save to Obsidian then respond
+    if note_mode.pop(user_id, False):
+        append_to_daily_note(text)
+        reply = await get_yuki_response(
+            user_id,
+            f"Kaz just shared this and Yuki saved it to his Obsidian daily note: \"{text}\". "
+            "Acknowledge it warmly, maybe reflect on what he shared, and respond naturally.",
+        )
+        await send_yuki_reply(update, reply, user_id)
+        return
+
     reply = await get_yuki_response(user_id, text)
     await send_yuki_reply(update, reply, user_id)
 
@@ -260,6 +293,30 @@ async def evening_wrapup(context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def note_nudge(context: ContextTypes.DEFAULT_TYPE):
+    """At 2pm, nudge Kaz to write in Obsidian if he hasn't yet."""
+    if has_written_today():
+        return
+    user_id = int(os.getenv('ALLOWED_USER_IDS', '0').split(',')[0].strip())
+    if not user_id:
+        return
+    note_mode[user_id] = True
+    try:
+        reply = await get_yuki_response(
+            user_id,
+            "Kaz hasn't written in his Obsidian daily note yet today. "
+            "Gently nudge him to jot something down — even just a few thoughts about his day, "
+            "how he's feeling, what he's working on. Tell him whatever he sends back, "
+            "Yuki will save it straight to his notes. Keep it light and encouraging.",
+            include_calendar=False
+        )
+        limit = 4096
+        for i in range(0, len(reply), limit):
+            await context.bot.send_message(chat_id=user_id, text=reply[i:i + limit])
+    except Exception as e:
+        logger.error(f"Note nudge error: {e}")
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -290,6 +347,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("week", week_command))
+    app.add_handler(CommandHandler("note", note_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -300,6 +358,7 @@ def main():
     jq = app.job_queue
     jq.run_daily(morning_briefing, time=datetime.strptime("09:00", "%H:%M").replace(tzinfo=pt).timetz())
     jq.run_daily(midday_checkin,   time=datetime.strptime("13:00", "%H:%M").replace(tzinfo=pt).timetz())
+    jq.run_daily(note_nudge,       time=datetime.strptime("14:00", "%H:%M").replace(tzinfo=pt).timetz())
     jq.run_daily(evening_wrapup,   time=datetime.strptime("19:00", "%H:%M").replace(tzinfo=pt).timetz())
 
     print("✨ Yuki is awake and ready for Kaz-kun! ✨")
