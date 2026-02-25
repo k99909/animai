@@ -1,15 +1,20 @@
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 import pytz
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from dotenv import load_dotenv
+
+load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-CREDENTIALS_FILE = '/Users/kazukidebear/.claude/google-calendar-credentials.json'
-TOKEN_FILE = '/Users/kazukidebear/anime-assistant/calendar_token.json'
-TZ = pytz.timezone('America/Los_Angeles')
+BASE_DIR = Path(__file__).parent
+CREDENTIALS_FILE = os.getenv('GOOGLE_CALENDAR_CREDENTIALS', str(BASE_DIR / 'google-calendar-credentials.json'))
+TOKEN_FILE = os.getenv('GOOGLE_CALENDAR_TOKEN', str(BASE_DIR / 'calendar_token.json'))
+TZ = pytz.timezone(os.getenv('TIMEZONE', 'America/Los_Angeles'))
 
 
 class CalendarClient:

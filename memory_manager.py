@@ -1,12 +1,14 @@
 import os
 import asyncio
+from pathlib import Path
 from datetime import datetime
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
 
-MEMORY_FILE = '/Users/kazukidebear/anime-assistant/memory.md'
+BASE_DIR = Path(__file__).parent
+MEMORY_FILE = os.getenv('MEMORY_FILE', str(BASE_DIR / 'memory.md'))
 client = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
 

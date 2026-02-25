@@ -2,6 +2,8 @@ import os
 import asyncio
 import json
 import logging
+import tempfile
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -22,6 +24,10 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
+# Only these Telegram user IDs can interact with Yuki
+_raw = os.getenv('ALLOWED_USER_IDS', '')
+ALLOWED_USER_IDS = set(int(uid.strip()) for uid in _raw.split(',') if uid.strip())
+
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
 calendar = CalendarClient()
@@ -32,6 +38,17 @@ conversations = {}
 pending_actions = {}
 # Message counter for memory updates
 message_count = {}
+
+
+def is_allowed(user_id: int) -> bool:
+    return not ALLOWED_USER_IDS or user_id in ALLOWED_USER_IDS
+
+
+async def safe_reply(update: Update, text: str, **kwargs):
+    """Send a message, splitting at 4096 chars if needed."""
+    limit = 4096
+    for i in range(0, len(text), limit):
+        await update.message.reply_text(text[i:i + limit], **kwargs)
 
 
 async def get_yuki_response(user_id: int, user_message: str, include_calendar: bool = True) -> str:
@@ -83,26 +100,28 @@ async def send_yuki_reply(update: Update, reply: str, user_id: int):
             InlineKeyboardButton("❌ Skip", callback_data="skip"),
         ]]
         pending_actions[user_id] = clean
-        await update.message.reply_text(clean, reply_markup=InlineKeyboardMarkup(keyboard))
+        await safe_reply(update, clean, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text(reply)
+        await safe_reply(update, reply)
 
 
 async def execute_approved_action(action_text: str) -> str:
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
     def extract():
         return client.messages.create(
             model="claude-opus-4-6",
             max_tokens=512,
-            system="""Extract the action from the message and return ONLY a JSON object.
+            system=f"""Extract the action from the message and return ONLY a JSON object.
 No explanation, just JSON.
 
 For calendar events return:
-{"type": "create_event", "title": "...", "start": "2026-02-25T10:00:00", "end": "2026-02-25T11:00:00"}
+{{"type": "create_event", "title": "...", "start": "2026-02-25T10:00:00", "end": "2026-02-25T11:00:00"}}
 
 If it's not a calendar event or you can't extract it clearly return:
-{"type": "unknown"}
+{{"type": "unknown"}}
 
-Use ISO 8601 format for dates. Assume Pacific Time (America/Los_Angeles). Current year is 2026.""",
+Use ISO 8601 format for dates. Assume Pacific Time (America/Los_Angeles). Today is {current_date}.""",
             messages=[{"role": "user", "content": action_text}]
         )
 
@@ -110,7 +129,7 @@ Use ISO 8601 format for dates. Assume Pacific Time (America/Los_Angeles). Curren
     try:
         data = json.loads(response.content[0].text.strip())
         if data.get("type") == "create_event":
-            link = calendar.create_event(
+            calendar.create_event(
                 title=data["title"],
                 start_iso=data["start"],
                 end_iso=data["end"]
@@ -123,6 +142,8 @@ Use ISO 8601 format for dates. Assume Pacific Time (America/Los_Angeles). Curren
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
     conversations[user_id] = []
     reply = await get_yuki_response(user_id, "Kaz-kun is back! Greet him warmly, reference something from your memory if relevant, and tell him about his day.")
     await send_yuki_reply(update, reply, user_id)
@@ -130,18 +151,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
     reply = await get_yuki_response(user_id, "Give Kaz-kun his full schedule briefing for today in your warm, kawaii style!")
     await send_yuki_reply(update, reply, user_id)
 
 
 async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
     reply = await get_yuki_response(user_id, "Walk Kaz-kun through his week ahead!")
     await send_yuki_reply(update, reply, user_id)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
     text = update.message.text
     reply = await get_yuki_response(user_id, text)
     await send_yuki_reply(update, reply, user_id)
@@ -149,11 +176,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
     voice = update.message.voice
 
     # Download voice file
     file = await context.bot.get_file(voice.file_id)
-    import tempfile
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
         tmp_path = tmp.name
     await file.download_to_drive(tmp_path)
@@ -175,8 +203,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Yuki couldn't hear that clearly~ Try again? 🎙️")
         return
     finally:
-        import os as _os
-        _os.unlink(tmp_path)
+        os.unlink(tmp_path)
 
     if not text:
         await update.message.reply_text("Yuki didn't catch anything~ 🎙️")
@@ -190,6 +217,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    if not is_allowed(user_id):
+        return
     action = query.data
 
     if action == "approve":
