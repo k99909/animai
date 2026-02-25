@@ -75,6 +75,16 @@ class CalendarClient:
 
         return '\n'.join(lines)
 
+    def create_event(self, title: str, start_iso: str, end_iso: str, description: str = "") -> str:
+        event = {
+            'summary': title,
+            'description': description,
+            'start': {'dateTime': start_iso, 'timeZone': 'America/Los_Angeles'},
+            'end': {'dateTime': end_iso, 'timeZone': 'America/Los_Angeles'},
+        }
+        created = self.service.events().insert(calendarId='primary', body=event).execute()
+        return created.get('htmlLink', 'created!')
+
     def get_context_for_yuki(self):
         try:
             now = datetime.now(TZ)
