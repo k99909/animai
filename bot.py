@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, time as dtime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -45,6 +45,12 @@ note_mode = {}
 
 def is_allowed(user_id: int) -> bool:
     return not ALLOWED_USER_IDS or user_id in ALLOWED_USER_IDS
+
+
+def get_primary_user_id() -> int:
+    raw = os.getenv('ALLOWED_USER_IDS', '0')
+    first = raw.split(',')[0].strip()
+    return int(first) if first.isdigit() else 0
 
 
 async def safe_reply(update: Update, text: str, **kwargs):
@@ -286,15 +292,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_proactive(context: ContextTypes.DEFAULT_TYPE, prompt: str):
     """Send a scheduled message to Kaz."""
-    user_id = int(os.getenv('ALLOWED_USER_IDS', '0').split(',')[0].strip())
+    user_id = get_primary_user_id()
     if not user_id:
         return
     try:
         reply = await get_yuki_response(user_id, prompt)
-        # Proactive messages don't come from an Update, so send directly
-        limit = 4096
-        for i in range(0, len(reply), limit):
-            await context.bot.send_message(chat_id=user_id, text=reply[i:i + limit])
+        for i in range(0, len(reply), 4096):
+            await context.bot.send_message(chat_id=user_id, text=reply[i:i + 4096])
     except Exception as e:
         logger.error(f"Proactive message error: {e}")
 
@@ -331,7 +335,7 @@ async def note_nudge(context: ContextTypes.DEFAULT_TYPE):
     """At 2pm, nudge Kaz to write in Obsidian if he hasn't yet."""
     if has_written_today():
         return
-    user_id = int(os.getenv('ALLOWED_USER_IDS', '0').split(',')[0].strip())
+    user_id = get_primary_user_id()
     if not user_id:
         return
     note_mode[user_id] = True
@@ -344,11 +348,106 @@ async def note_nudge(context: ContextTypes.DEFAULT_TYPE):
             "Yuki will save it straight to his notes. Keep it light and encouraging.",
             include_calendar=False
         )
-        limit = 4096
-        for i in range(0, len(reply), limit):
-            await context.bot.send_message(chat_id=user_id, text=reply[i:i + limit])
+        for i in range(0, len(reply), 4096):
+            await context.bot.send_message(chat_id=user_id, text=reply[i:i + 4096])
     except Exception as e:
         logger.error(f"Note nudge error: {e}")
+
+
+async def pre_event_checkin(context: ContextTypes.DEFAULT_TYPE):
+    """15 minutes before an event — brief prep nudge."""
+    event = context.job.data
+    user_id = get_primary_user_id()
+    if not user_id:
+        return
+    try:
+        reply = await get_yuki_response(
+            user_id,
+            f"Kaz has '{event['title']}' starting in 15 minutes at {event['start_str']}. "
+            "Give him a warm, brief heads-up. If you know anything about this event or the people "
+            "involved from his notes or memory, mention it in one sentence. 2-3 sentences max.",
+            include_calendar=False
+        )
+        for i in range(0, len(reply), 4096):
+            await context.bot.send_message(chat_id=user_id, text=reply[i:i + 4096])
+    except Exception as e:
+        logger.error(f"Pre-event check-in error: {e}")
+
+
+async def post_event_checkin(context: ContextTypes.DEFAULT_TYPE):
+    """30 minutes after an event ends — debrief + auto-save reply to notes."""
+    event = context.job.data
+    user_id = get_primary_user_id()
+    if not user_id:
+        return
+    note_mode[user_id] = True
+    try:
+        reply = await get_yuki_response(
+            user_id,
+            f"'{event['title']}' just finished. Ask Kaz warmly how it went — "
+            "brief and natural, like a friend checking in. "
+            "Let him know his reply will be saved to his notes automatically.",
+            include_calendar=False
+        )
+        for i in range(0, len(reply), 4096):
+            await context.bot.send_message(chat_id=user_id, text=reply[i:i + 4096])
+    except Exception as e:
+        logger.error(f"Post-event check-in error: {e}")
+
+
+async def schedule_event_checkins(context: ContextTypes.DEFAULT_TYPE):
+    """Scan today's calendar and schedule pre/post check-ins for each timed event."""
+    import pytz
+    pt = pytz.timezone('America/Los_Angeles')
+    now = datetime.now(pt)
+
+    try:
+        events = calendar.get_today_events()
+    except Exception as e:
+        logger.error(f"Failed to fetch events for scheduling: {e}")
+        return
+
+    scheduled = 0
+    for event in events:
+        start_str = event['start'].get('dateTime')
+        end_str = event['end'].get('dateTime')
+
+        # Skip all-day events
+        if not start_str or not end_str:
+            continue
+
+        title = event.get('summary', 'an event')
+        start_dt = datetime.fromisoformat(start_str).astimezone(pt)
+        end_dt = datetime.fromisoformat(end_str).astimezone(pt)
+
+        event_data = {
+            'title': title,
+            'start_str': start_dt.strftime('%-I:%M %p'),
+            'end_str': end_dt.strftime('%-I:%M %p'),
+        }
+
+        pre_time = start_dt - timedelta(minutes=15)
+        post_time = end_dt + timedelta(minutes=30)
+
+        if pre_time > now:
+            context.job_queue.run_once(
+                pre_event_checkin,
+                when=pre_time,
+                data=event_data,
+                name=f"pre|{title}|{start_dt.date()}"
+            )
+            scheduled += 1
+
+        if post_time > now:
+            context.job_queue.run_once(
+                post_event_checkin,
+                when=post_time,
+                data=event_data,
+                name=f"post|{title}|{end_dt.date()}"
+            )
+            scheduled += 1
+
+    logger.info(f"Scheduled {scheduled} event check-in jobs for today")
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -390,10 +489,13 @@ def main():
     import pytz
     pt = pytz.timezone('America/Los_Angeles')
     jq = app.job_queue
-    jq.run_daily(morning_briefing, time=datetime.strptime("09:00", "%H:%M").replace(tzinfo=pt).timetz())
-    jq.run_daily(midday_checkin,   time=datetime.strptime("13:00", "%H:%M").replace(tzinfo=pt).timetz())
-    jq.run_daily(note_nudge,       time=datetime.strptime("14:00", "%H:%M").replace(tzinfo=pt).timetz())
-    jq.run_daily(evening_wrapup,   time=datetime.strptime("19:00", "%H:%M").replace(tzinfo=pt).timetz())
+    jq.run_daily(morning_briefing,       time=dtime(9,  0,  tzinfo=pt))
+    jq.run_daily(midday_checkin,         time=dtime(13, 0,  tzinfo=pt))
+    jq.run_daily(note_nudge,             time=dtime(14, 0,  tzinfo=pt))
+    jq.run_daily(evening_wrapup,         time=dtime(19, 0,  tzinfo=pt))
+    # Refresh event check-ins every midnight, and once 10s after startup
+    jq.run_daily(schedule_event_checkins, time=dtime(0, 1, tzinfo=pt))
+    jq.run_once(schedule_event_checkins, when=10)
 
     print("✨ Yuki is awake and ready for Kaz-kun! ✨")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
