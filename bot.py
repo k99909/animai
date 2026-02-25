@@ -8,6 +8,7 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 from anthropic import Anthropic
+from groq import Groq
 from dotenv import load_dotenv
 from yuki import YUKI_SYSTEM_PROMPT
 from calendar_client import CalendarClient
@@ -22,6 +23,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
+groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
 calendar = CalendarClient()
 
 # Per-user conversation history
@@ -145,6 +147,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_yuki_reply(update, reply, user_id)
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    voice = update.message.voice
+
+    # Download voice file
+    file = await context.bot.get_file(voice.file_id)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp_path = tmp.name
+    await file.download_to_drive(tmp_path)
+
+    # Transcribe with Groq Whisper
+    def transcribe():
+        with open(tmp_path, "rb") as audio:
+            return groq_client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=("voice.ogg", audio),
+            )
+
+    try:
+        result = await asyncio.to_thread(transcribe)
+        text = result.text.strip()
+        logger.info(f"Voice transcribed: {text}")
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        await update.message.reply_text("Yuki couldn't hear that clearly~ Try again? 🎙️")
+        return
+    finally:
+        import os as _os
+        _os.unlink(tmp_path)
+
+    if not text:
+        await update.message.reply_text("Yuki didn't catch anything~ 🎙️")
+        return
+
+    reply = await get_yuki_response(user_id, text)
+    await send_yuki_reply(update, reply, user_id)
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -174,6 +215,7 @@ def main():
     app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("week", week_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     print("✨ Yuki is awake and ready for Kaz-kun! ✨")
