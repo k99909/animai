@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from yuki import YUKI_SYSTEM_PROMPT
 from calendar_client import CalendarClient
 from memory_manager import load_memory, update_memory
-from obsidian_client import get_full_context, has_written_today, append_to_daily_note
+from obsidian_client import get_full_context, has_written_today, get_available_destinations, append_to_file
 
 load_dotenv()
 
@@ -52,6 +52,41 @@ async def safe_reply(update: Update, text: str, **kwargs):
     limit = 4096
     for i in range(0, len(text), limit):
         await update.message.reply_text(text[i:i + limit], **kwargs)
+
+
+async def route_and_save(text: str) -> tuple[str, str]:
+    """
+    Use Claude haiku to classify the note and route it to the right Obsidian file.
+    Returns (relative_path, human_label).
+    """
+    destinations = get_available_destinations()
+    dest_list = "\n".join(
+        f"- {key}: {v['label']}" for key, v in destinations.items()
+    )
+
+    def classify():
+        return client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=50,
+            system=f"""You route notes to the correct file in an Obsidian vault.
+Given a note, return ONLY the single best destination key from this list — nothing else.
+
+{dest_list}
+
+Rules:
+- Mentions a client by name → that client's key
+- Content idea, hook, post concept, caption, reel idea → content_ideas
+- About mom Michiko's social media → mom_social
+- About a specific project by name → that project's key
+- Anything else → daily_note""",
+            messages=[{"role": "user", "content": text}]
+        )
+
+    response = await asyncio.to_thread(classify)
+    key = response.content[0].text.strip()
+    dest = destinations.get(key, destinations["daily_note"])
+    append_to_file(dest["path"], text)
+    return dest["path"], dest["label"]
 
 
 async def get_yuki_response(user_id: int, user_message: str, include_calendar: bool = True) -> str:
@@ -177,17 +212,16 @@ async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = ' '.join(context.args) if context.args else ''
     if text:
-        append_to_daily_note(text)
+        _, label = await route_and_save(text)
         reply = await get_yuki_response(
             user_id,
-            f"Kaz just added this to his Obsidian daily note: \"{text}\". Acknowledge briefly and warmly.",
+            f"Kaz just sent a note and Yuki saved it to {label}: \"{text}\". Acknowledge briefly and warmly.",
             include_calendar=False
         )
         await send_yuki_reply(update, reply, user_id)
     else:
-        # No text provided — enter note mode for next message
         note_mode[user_id] = True
-        await update.message.reply_text("Ready! Send me what you want to add and Yuki will save it to your notes ✨")
+        await update.message.reply_text("Ready! Send me what you want to add and Yuki will save it to the right place ✨")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,11 +232,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # If user is in note mode, save to Obsidian then respond
     if note_mode.pop(user_id, False):
-        append_to_daily_note(text)
+        _, label = await route_and_save(text)
         reply = await get_yuki_response(
             user_id,
-            f"Kaz just shared this and Yuki saved it to his Obsidian daily note: \"{text}\". "
-            "Acknowledge it warmly, maybe reflect on what he shared, and respond naturally.",
+            f"Kaz just shared this and Yuki saved it to {label}: \"{text}\". "
+            "Acknowledge it warmly, mention where it was saved, maybe reflect on what he shared, and respond naturally.",
         )
         await send_yuki_reply(update, reply, user_id)
         return

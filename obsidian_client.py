@@ -63,7 +63,6 @@ def get_mom_context() -> str:
 def has_written_today() -> bool:
     """Returns True if today's daily note has meaningful content."""
     content = get_daily_note()
-    # Ignore empty files or bare templates (less than 100 chars of real content)
     stripped = '\n'.join(
         line for line in content.splitlines()
         if line.strip() and not line.strip().startswith('#')
@@ -71,26 +70,71 @@ def has_written_today() -> bool:
     return len(stripped) > 100
 
 
-def append_to_daily_note(text: str) -> str:
-    """Append text to today's daily note, creating it if needed. Returns the file path."""
-    today = datetime.now()
-    filename = today.strftime('%Y-%m-%d') + '.md'
-    note_path = VAULT_PATH / 'Daily Notes' / filename
-    note_path.parent.mkdir(parents=True, exist_ok=True)
+def get_available_destinations() -> dict:
+    """
+    Dynamically build all routable locations in the vault.
+    Returns {key: {"path": relative_path_str, "label": human_label}}
+    """
+    today = datetime.now().strftime('%Y-%m-%d')
+    destinations = {
+        "daily_note": {
+            "path": f"Daily Notes/{today}.md",
+            "label": "today's daily note"
+        },
+        "content_ideas": {
+            "path": "Projects/My Social Media/Content Ideas.md",
+            "label": "Content Ideas"
+        },
+        "mom_social": {
+            "path": "Projects/Mom's Social Media/Context.md",
+            "label": "Mom's Social Media notes"
+        },
+    }
 
-    timestamp = today.strftime('%-I:%M %p')
+    # Add any project files found in Projects/ (excluding subfolders)
+    projects_dir = VAULT_PATH / 'Projects'
+    if projects_dir.exists():
+        for f in projects_dir.glob('*.md'):
+            key = f"project_{f.stem.lower().replace(' ', '_').replace('-', '_')}"
+            destinations[key] = {
+                "path": f"Projects/{f.name}",
+                "label": f"{f.stem} project notes"
+            }
+
+    # Add all client files
+    clients_dir = VAULT_PATH / 'Projects' / 'Clients'
+    if clients_dir.exists():
+        for f in clients_dir.glob('*.md'):
+            key = f"client_{f.stem.lower().replace(' ', '_')}"
+            destinations[key] = {
+                "path": f"Projects/Clients/{f.name}",
+                "label": f"{f.stem} (client)"
+            }
+
+    return destinations
+
+
+def append_to_file(relative_path: str, text: str) -> str:
+    """
+    Append a timestamped entry to any vault file.
+    Creates the file (and parent dirs) if it doesn't exist.
+    Returns the full file path string.
+    """
+    file_path = VAULT_PATH / relative_path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime('%-I:%M %p')
     entry = f"\n\n---\n*Added via Yuki at {timestamp}*\n{text.strip()}"
 
-    if note_path.exists():
-        with open(note_path, 'a', encoding='utf-8') as f:
+    if file_path.exists():
+        with open(file_path, 'a', encoding='utf-8') as f:
             f.write(entry)
     else:
-        # Create a minimal daily note with the entry
-        header = f"# {today.strftime('%A, %B %d, %Y')}\n"
-        with open(note_path, 'w', encoding='utf-8') as f:
+        header = f"# {file_path.stem}\n"
+        with open(file_path, 'w', encoding='utf-8') as f:
             f.write(header + entry)
 
-    return str(note_path)
+    return str(file_path)
 
 
 def get_full_context() -> str:
