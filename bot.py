@@ -44,7 +44,10 @@ note_mode = {}
 
 
 def is_allowed(user_id: int) -> bool:
-    return not ALLOWED_USER_IDS or user_id in ALLOWED_USER_IDS
+    if not ALLOWED_USER_IDS:
+        logger.warning("ALLOWED_USER_IDS is empty — denying all access. Set it in .env.")
+        return False
+    return user_id in ALLOWED_USER_IDS
 
 
 def get_primary_user_id() -> int:
@@ -95,11 +98,11 @@ Rules:
     return dest["path"], dest["label"]
 
 
-async def get_yuki_response(user_id: int, user_message: str, include_calendar: bool = True) -> str:
+async def get_yuki_response(user_id: int, user_message: str, include_calendar: bool = True, include_week: bool = False) -> str:
     if user_id not in conversations:
         conversations[user_id] = []
 
-    cal_context = calendar.get_context_for_yuki() if include_calendar else ""
+    cal_context = calendar.get_context_for_yuki(include_week=include_week) if include_calendar else ""
     obsidian_context = get_full_context()
     memory = load_memory()
     system = YUKI_SYSTEM_PROMPT
@@ -208,7 +211,7 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_allowed(user_id):
         return
-    reply = await get_yuki_response(user_id, "Walk Kaz-kun through his week ahead!")
+    reply = await get_yuki_response(user_id, "Walk Kaz-kun through his week ahead!", include_week=True)
     await send_yuki_reply(update, reply, user_id)
 
 
@@ -235,6 +238,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(user_id):
         return
     text = update.message.text
+
+    # If user is editing a pending action, re-propose with their changes
+    if user_id in pending_actions:
+        original = pending_actions.pop(user_id)
+        reply = await get_yuki_response(
+            user_id,
+            f"Kaz wants to modify this action:\n\nOriginal: {original}\n\nHis edit request: {text}\n\n"
+            "Re-propose the updated action with [APPROVAL_NEEDED] so he can approve the new version.",
+        )
+        await send_yuki_reply(update, reply, user_id)
+        return
 
     # If user is in note mode, save to Obsidian then respond
     if note_mode.pop(user_id, False):
@@ -458,8 +472,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     action = query.data
 
+    pending = pending_actions.pop(user_id, "")
+
     if action == "approve":
-        pending = pending_actions.get(user_id, "")
+        if not pending:
+            await query.edit_message_text("Nothing pending to approve~")
+            return
         result = await execute_approved_action(pending)
         reply = await get_yuki_response(
             user_id,
@@ -468,7 +486,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(reply)
     elif action == "edit":
-        await query.edit_message_text("Of course~! ✏️ What would you like to change, Kaz-kun? Tell Yuki! ♡")
+        # Re-store so the next message can reference and modify it
+        pending_actions[user_id] = pending
+        await query.edit_message_text(
+            "Of course~! ✏️ Tell Yuki what to change, and she'll re-propose it! ♡"
+        )
     elif action == "skip":
         reply = await get_yuki_response(user_id, "Kaz skipped this one. Acknowledge briefly and sweetly.", include_calendar=False)
         await query.edit_message_text(reply)

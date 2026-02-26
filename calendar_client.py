@@ -20,7 +20,10 @@ TZ = pytz.timezone(os.getenv('TIMEZONE', 'America/Los_Angeles'))
 class CalendarClient:
     def __init__(self):
         self.service = None
-        self._authenticate()
+
+    def _ensure_auth(self):
+        if self.service is None:
+            self._authenticate()
 
     def _authenticate(self):
         creds = None
@@ -39,6 +42,7 @@ class CalendarClient:
         self.service = build('calendar', 'v3', credentials=creds)
 
     def _get_events(self, days_ahead=0, days_range=1, calendar_id='primary'):
+        self._ensure_auth()
         now = datetime.now(TZ)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days_ahead)
         end = start + timedelta(days=days_range)
@@ -81,6 +85,7 @@ class CalendarClient:
         return '\n'.join(lines)
 
     def create_event(self, title: str, start_iso: str, end_iso: str, description: str = "") -> str:
+        self._ensure_auth()
         event = {
             'summary': title,
             'description': description,
@@ -90,15 +95,35 @@ class CalendarClient:
         created = self.service.events().insert(calendarId='primary', body=event).execute()
         return created.get('htmlLink', 'created!')
 
-    def get_context_for_yuki(self):
+    def get_context_for_yuki(self, include_week=False):
         try:
             now = datetime.now(TZ)
             today_events = self.get_today_events()
             today_str = self.format_events_for_yuki(today_events)
 
-            return (
+            context = (
                 f"Current time: {now.strftime('%A, %B %d, %Y at %-I:%M %p')} (Pacific)\n"
                 f"Today's schedule:\n{today_str}"
             )
+
+            if include_week:
+                week_events = self.get_week_events()
+                # Group events by date
+                days = {}
+                for event in week_events:
+                    start = event['start'].get('dateTime', event['start'].get('date'))
+                    date_key = start[:10]
+                    days.setdefault(date_key, []).append(event)
+
+                week_lines = []
+                for date_key in sorted(days):
+                    dt = datetime.fromisoformat(date_key)
+                    day_label = dt.strftime('%A, %B %d')
+                    day_events = self.format_events_for_yuki(days[date_key])
+                    week_lines.append(f"\n{day_label}:\n{day_events}")
+
+                context += "\n\n━━━ WEEK AHEAD ━━━" + "".join(week_lines)
+
+            return context
         except Exception as e:
             return f"Calendar temporarily unavailable ({str(e)})"

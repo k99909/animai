@@ -10,6 +10,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent
 MEMORY_FILE = os.getenv('MEMORY_FILE', str(BASE_DIR / 'memory.md'))
 client = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+_memory_lock = asyncio.Lock()
 
 
 def load_memory() -> str:
@@ -28,6 +29,11 @@ async def update_memory(conversation_history: list):
     if len(conversation_history) < 2:
         return
 
+    async with _memory_lock:
+        await _do_update_memory(conversation_history)
+
+
+async def _do_update_memory(conversation_history: list):
     current_memory = load_memory()
     today = datetime.now().strftime('%Y-%m-%d %I:%M %p')
 
