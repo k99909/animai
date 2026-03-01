@@ -84,7 +84,14 @@ class CalendarClient:
 
         return '\n'.join(lines)
 
-    def create_event(self, title: str, start_iso: str, end_iso: str, description: str = "") -> str:
+    def create_event(
+        self,
+        title: str,
+        start_iso: str,
+        end_iso: str,
+        description: str = "",
+        recurrence: list[str] | None = None,
+    ) -> str:
         self._ensure_auth()
         event = {
             'summary': title,
@@ -92,6 +99,8 @@ class CalendarClient:
             'start': {'dateTime': start_iso, 'timeZone': 'America/Los_Angeles'},
             'end': {'dateTime': end_iso, 'timeZone': 'America/Los_Angeles'},
         }
+        if recurrence:
+            event['recurrence'] = recurrence
         created = self.service.events().insert(calendarId='primary', body=event).execute()
         return created.get('htmlLink', 'created!')
 

@@ -1,5 +1,10 @@
 .env
 calendar_token.json
+gmail_token.json
+google-calendar-credentials.json
+conversations.json
+pending_suggestions.json
+memory.md
 __pycache__/
 *.pyc
 .DS_Store
