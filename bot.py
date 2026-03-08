@@ -475,6 +475,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    # ⚠️ DISABLED — Yuki is now running from the AIOS project.
+    # This bot must NOT poll the same Telegram token or it will steal
+    # messages from the AIOS instance. To re-enable, remove the early return.
+    print("⚠️ animai bot is disabled — Yuki is running from AIOS. "
+          "Remove the early return in main() to re-enable.")
+    return
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
