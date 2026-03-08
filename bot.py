@@ -485,17 +485,16 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    # Scheduled proactive messages (Pacific Time)
-    import pytz
-    pt = pytz.timezone('America/Los_Angeles')
-    jq = app.job_queue
-    jq.run_daily(morning_briefing,       time=dtime(9,  0,  tzinfo=pt))
-    jq.run_daily(midday_checkin,         time=dtime(13, 0,  tzinfo=pt))
-    jq.run_daily(note_nudge,             time=dtime(14, 0,  tzinfo=pt))
-    jq.run_daily(evening_wrapup,         time=dtime(19, 0,  tzinfo=pt))
-    # Refresh event check-ins every midnight, and once 10s after startup
-    jq.run_daily(schedule_event_checkins, time=dtime(0, 1, tzinfo=pt))
-    jq.run_once(schedule_event_checkins, when=10)
+    # Scheduled proactive messages — DISABLED (Yuki used in separate project)
+    # import pytz
+    # pt = pytz.timezone('America/Los_Angeles')
+    # jq = app.job_queue
+    # jq.run_daily(morning_briefing,       time=dtime(9,  0,  tzinfo=pt))
+    # jq.run_daily(midday_checkin,         time=dtime(13, 0,  tzinfo=pt))
+    # jq.run_daily(note_nudge,             time=dtime(14, 0,  tzinfo=pt))
+    # jq.run_daily(evening_wrapup,         time=dtime(19, 0,  tzinfo=pt))
+    # jq.run_daily(schedule_event_checkins, time=dtime(0, 1, tzinfo=pt))
+    # jq.run_once(schedule_event_checkins, when=10)
 
     print("✨ Yuki is awake and ready for Kaz-kun! ✨")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
